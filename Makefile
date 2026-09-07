@@ -40,25 +40,27 @@ open:
 clean:
 	(rm -rf build)
 
-# Pick a simulator on the newest available iOS runtime via Xcode's own destination enumeration,
-# instead of hardcoding a device name. GitHub runners rotate their Xcode/simulator lineup over time
-# (e.g. iPhone 15/16 dropped for iPhone 16e/17), so a fixed name eventually breaks; this adapts to
-# whatever is installed and, per Apple's guidance, tests against the latest iOS runtime.
+# Create a simulator from the newest installed iOS runtime + an iPhone device type, instead of
+# hardcoding a device name or relying on pre-created simulators. GitHub runners rotate their
+# Xcode/simulator lineup (e.g. iPhone 15/16 dropped for 16e/17) and sometimes ship runtimes with no
+# pre-created devices, so both fixed names and `-showdestinations` eventually break. Creating the
+# device on the fly from whatever runtime is installed is resilient to all of that, and using the
+# newest runtime keeps tests on the latest iOS per Apple's guidance. The device is deleted after.
 test: clean
 	@echo "######################################################################"
 	@echo "### Testing iOS"
 	@echo "######################################################################"
 	@set -e; \
-	sim_id=$$(xcodebuild -showdestinations -workspace $(PROJECT_NAME).xcworkspace -scheme $(PROJECT_NAME)Tests 2>/dev/null \
-		| grep 'platform:iOS Simulator' \
-		| sed -nE 's/.*id:([0-9A-Fa-f-]{36}).*OS:([0-9.]+).*/\2 \1/p' \
-		| sort -rV | head -1 | cut -d' ' -f2); \
-	if [ -z "$$sim_id" ]; then \
-		echo "error: no iOS Simulator destination available for $(PROJECT_NAME)Tests"; \
-		echo "installed simulator runtimes:"; xcrun simctl list runtimes iOS || true; \
+	runtime=$$(xcrun simctl list runtimes iOS 2>/dev/null | grep -oE 'com.apple.CoreSimulator.SimRuntime.iOS-[0-9-]+' | tail -1); \
+	devtype=$$(xcrun simctl list devicetypes 2>/dev/null | grep -oE 'com.apple.CoreSimulator.SimDeviceType.iPhone-[0-9A-Za-z-]+' | tail -1); \
+	if [ -z "$$runtime" ] || [ -z "$$devtype" ]; then \
+		echo "error: no iOS simulator runtime or iPhone device type available"; \
+		xcrun simctl list runtimes iOS || true; \
 		exit 1; \
 	fi; \
-	echo "### Using iOS Simulator (newest available runtime): $$sim_id"; \
+	sim_id=$$(xcrun simctl create "ci-$(PROJECT_NAME)-tests" "$$devtype" "$$runtime"); \
+	trap "xcrun simctl delete $$sim_id >/dev/null 2>&1 || true" EXIT; \
+	echo "### Using iOS Simulator: $$sim_id ($$devtype on $$runtime)"; \
 	xcodebuild test -workspace $(PROJECT_NAME).xcworkspace -scheme $(PROJECT_NAME)Tests -destination "id=$$sim_id" -derivedDataPath build/out -enableCodeCoverage YES
 
 archive: clean pod-install
