@@ -40,11 +40,26 @@ open:
 clean:
 	(rm -rf build)
 
+# Pick a simulator on the newest available iOS runtime via Xcode's own destination enumeration,
+# instead of hardcoding a device name. GitHub runners rotate their Xcode/simulator lineup over time
+# (e.g. iPhone 15/16 dropped for iPhone 16e/17), so a fixed name eventually breaks; this adapts to
+# whatever is installed and, per Apple's guidance, tests against the latest iOS runtime.
 test: clean
 	@echo "######################################################################"
 	@echo "### Testing iOS"
 	@echo "######################################################################"
-	xcodebuild test -workspace $(PROJECT_NAME).xcworkspace -scheme $(PROJECT_NAME)Tests -destination 'platform=iOS Simulator,name=iPhone 15' -derivedDataPath build/out -enableCodeCoverage YES
+	@set -e; \
+	sim_id=$$(xcodebuild -showdestinations -workspace $(PROJECT_NAME).xcworkspace -scheme $(PROJECT_NAME)Tests 2>/dev/null \
+		| grep 'platform:iOS Simulator' \
+		| sed -nE 's/.*id:([0-9A-Fa-f-]{36}).*OS:([0-9.]+).*/\2 \1/p' \
+		| sort -rV | head -1 | cut -d' ' -f2); \
+	if [ -z "$$sim_id" ]; then \
+		echo "error: no iOS Simulator destination available for $(PROJECT_NAME)Tests"; \
+		echo "installed simulator runtimes:"; xcrun simctl list runtimes iOS || true; \
+		exit 1; \
+	fi; \
+	echo "### Using iOS Simulator (newest available runtime): $$sim_id"; \
+	xcodebuild test -workspace $(PROJECT_NAME).xcworkspace -scheme $(PROJECT_NAME)Tests -destination "id=$$sim_id" -derivedDataPath build/out -enableCodeCoverage YES
 
 archive: clean pod-install
 	xcodebuild archive -workspace $(PROJECT_NAME).xcworkspace -scheme $(SCHEME_NAME_XCFRAMEWORK) -archivePath "./build/ios.xcarchive" -sdk iphoneos -destination="iOS" SKIP_INSTALL=NO BUILD_LIBRARIES_FOR_DISTRIBUTION=YES
